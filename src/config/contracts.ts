@@ -16,7 +16,7 @@ export const FEE = {
   PROTOCOL_PERCENT: 0.1,
 } as const
 
-export const SUBGRAPH_URL = 'https://api.goldsky.com/api/public/project_cmj7jnjbsro2301stdkaz9yfm/subgraphs/quickswap-monad/v2/gn'
+export const SUBGRAPH_URL = 'https://api.goldsky.com/api/public/project_cmj7jnjbsro2301stdkaz9yfm/subgraphs/quickswap-monad/v3/gn'
 
 export const TOKENS = [
   { address: CONTRACTS.WMON, symbol: 'WMON', name: 'Wrapped MON', decimals: 18 },

@@ -129,11 +129,14 @@ function App() {
 
               {/* Content */}
               <div className="flex justify-center">
-                <div className="w-full max-w-md">
-                  {activeTab === 'swap' && <SwapCard />}
-                  {activeTab === 'liquidity' && <LiquidityCard />}
-                  {activeTab === 'farm' && <FarmCard />}
-                </div>
+                {activeTab === 'liquidity' ? (
+                  <LiquidityCard />
+                ) : (
+                  <div className="w-full max-w-md">
+                    {activeTab === 'swap' && <SwapCard />}
+                    {activeTab === 'farm' && <FarmCard />}
+                  </div>
+                )}
               </div>
               {activeTab === 'stats' && (
                 <div className="max-w-2xl mx-auto">
