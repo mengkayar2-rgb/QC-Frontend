@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract } from 'wagmi'
 import { parseUnits, formatUnits } from 'viem'
-import { Plus, ChevronDown, TrendingUp, Droplets, DollarSign, Search, RefreshCw, Users, ExternalLink, X } from 'lucide-react'
+import { Plus, ChevronDown, ArrowUpRight, Wallet, Layers, BarChart3, RefreshCw, X, Settings, Info, Minus, ExternalLink } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { CONTRACTS, SUBGRAPH_URL } from '../config/contracts'
 import { ROUTER_ABI, ERC20_ABI } from '../config/abis'
-import { DEFAULT_TOKENS, type Token } from '../config/tokens'
+import { DEFAULT_TOKENS, type Token, getStoredTokens } from '../config/tokens'
 import { TokenModal } from './TokenModal'
 
 const WMON_ADDRESS = '0x3bd359c1119da7da1d913d1c4d2b7c461115433a'
@@ -17,7 +18,13 @@ function formatUSD(num: number): string {
   return `$${num.toFixed(4)}`
 }
 
-type PoolTab = 'pools' | 'positions'
+function formatNumber(num: number): string {
+  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(2)}M`
+  if (num >= 1_000) return `${(num / 1_000).toFixed(2)}K`
+  if (num >= 1) return num.toFixed(2)
+  if (num >= 0.0001) return num.toFixed(4)
+  return num.toFixed(6)
+}
 
 interface PoolData {
   id: string
@@ -32,10 +39,7 @@ interface PoolData {
   liquidityProviderCount: string
 }
 
-interface FactoryData {
-  pairCount: number
-  txCount: string
-}
+interface PositionData { pair: PoolData; liquidityTokenBalance: string }
 
 function calculatePoolTVL(pool: PoolData): number {
   const reserve0 = parseFloat(pool.reserve0) || 0
@@ -57,204 +61,948 @@ function calculatePoolVolume(pool: PoolData): number {
   return (vol0 + vol1) * MON_PRICE_USD * 0.01
 }
 
-function StatCard({ icon, label, value, subValue, color, loading }: { icon: React.ReactNode; label: string; value: string; subValue?: string; color: string; loading?: boolean }) {
-  const colorClasses: Record<string, string> = {
-    primary: 'from-primary-500/20 to-primary-600/10 border-primary-500/30 text-primary-400',
-    secondary: 'from-secondary-500/20 to-secondary-600/10 border-secondary-500/30 text-secondary-400',
-    cyan: 'from-cyan-500/20 to-cyan-600/10 border-cyan-500/30 text-cyan-400',
-    green: 'from-green-500/20 to-green-600/10 border-green-500/30 text-green-400',
+
+// Token Pair Icon - Uniswap V3 Style
+function TokenPairIcon({ token0, token1, size = 'md' }: { token0: string; token1: string; size?: 'sm' | 'md' | 'lg' }) {
+  const sizes = { sm: 'w-6 h-6', md: 'w-8 h-8', lg: 'w-10 h-10' }
+  const textSizes = { sm: 'text-[8px]', md: 'text-xs', lg: 'text-sm' }
+  const getGradient = (symbol: string) => {
+    const colors: Record<string, string> = {
+      'WMON': 'from-purple-500 to-indigo-600',
+      'MON': 'from-purple-500 to-indigo-600',
+      'QUICK': 'from-blue-500 to-cyan-500',
+      'USDT': 'from-green-500 to-emerald-600',
+      'USDC': 'from-blue-400 to-blue-600',
+      'ETH': 'from-gray-400 to-gray-600',
+    }
+    return colors[symbol] || 'from-pink-500 to-purple-600'
   }
   return (
-    <div className={`glass-card p-4 bg-gradient-to-br ${colorClasses[color] || colorClasses.primary}`}>
-      <div className="flex items-center gap-2 mb-2">{icon}<span className="text-xs text-gray-400">{label}</span></div>
-      {loading ? <div className="h-7 bg-atlantis-700/50 rounded animate-pulse w-20" /> : <><div className="text-xl font-bold text-white">{value}</div>{subValue && <div className="text-xs text-gray-500 mt-1">{subValue}</div>}</>}
+    <div className="flex -space-x-2">
+      <div className={`${sizes[size]} rounded-full bg-gradient-to-br ${getGradient(token0)} flex items-center justify-center ring-2 ring-[#191B1F] z-10`}>
+        <span className={`${textSizes[size]} font-bold text-white`}>{token0.slice(0, 2)}</span>
+      </div>
+      <div className={`${sizes[size]} rounded-full bg-gradient-to-br ${getGradient(token1)} flex items-center justify-center ring-2 ring-[#191B1F]`}>
+        <span className={`${textSizes[size]} font-bold text-white`}>{token1.slice(0, 2)}</span>
+      </div>
     </div>
   )
 }
 
-function TokenIcon({ symbol }: { symbol: string }) {
-  return <div className="w-8 h-8 bg-gradient-to-br from-primary-500/40 to-secondary-500/40 rounded-full flex items-center justify-center border border-atlantis-600/50"><span className="text-xs font-bold text-white">{symbol.slice(0, 2)}</span></div>
+// Fee Badge
+function FeeBadge({ fee = '0.5%' }: { fee?: string }) {
+  return <span className="px-2 py-0.5 text-xs font-medium bg-[#2C2F36] text-gray-300 rounded-md">{fee}</span>
 }
 
-function PoolsTable({ pools, loading, onAddLiquidity }: { pools: PoolData[]; loading: boolean; onAddLiquidity: () => void }) {
-  if (loading) return <div className="glass-card p-6"><div className="space-y-4">{[1, 2, 3].map(i => <div key={i} className="h-16 bg-atlantis-700/30 rounded-xl animate-pulse" />)}</div></div>
-  if (pools.length === 0) return <div className="glass-card p-8 text-center"><Droplets className="w-12 h-12 text-gray-600 mx-auto mb-4" /><h3 className="text-lg font-semibold text-white mb-2">No Pools Found</h3><p className="text-gray-400 mb-4">Be the first to create a liquidity pool!</p><button onClick={onAddLiquidity} className="gradient-button px-6 py-2">Create Pool</button></div>
+// Remove Liquidity Modal
+function RemoveLiquidityModal({ position, onClose, onSuccess }: { position: PositionData; onClose: () => void; onSuccess: () => void }) {
+  const { address } = useAccount()
+  const [percent, setPercent] = useState(100)
+  const pool = position.pair
+  const lpBalance = parseFloat(position.liquidityTokenBalance) || 0
+  const totalSupply = parseFloat(pool.totalSupply) || 1
+  const reserve0 = parseFloat(pool.reserve0) || 0
+  const reserve1 = parseFloat(pool.reserve1) || 0
+  
+  const removeAmount = (lpBalance * percent) / 100
+  const token0Amount = (removeAmount / totalSupply) * reserve0
+  const token1Amount = (removeAmount / totalSupply) * reserve1
+  
+  const { writeContract, data: hash, isPending } = useWriteContract()
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })
+  
+  // Check LP token allowance
+  const { data: lpAllowance } = useReadContract({
+    address: pool.id as `0x${string}`,
+    abi: ERC20_ABI,
+    functionName: 'allowance',
+    args: address ? [address, CONTRACTS.ROUTER] : undefined,
+    query: { enabled: !!address }
+  })
+  
+  const needsApproval = lpAllowance !== undefined ? lpAllowance < parseUnits(removeAmount.toString(), 18) : true
+  
+  const handleApprove = () => {
+    writeContract({
+      address: pool.id as `0x${string}`,
+      abi: ERC20_ABI,
+      functionName: 'approve',
+      args: [CONTRACTS.ROUTER, parseUnits('999999999999', 18)]
+    })
+  }
+  
+  const handleRemove = () => {
+    if (!address) return
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60)
+    const liquidity = parseUnits(removeAmount.toFixed(18), 18)
+    const amountAMin = parseUnits((token0Amount * 0.95).toFixed(18), 18)
+    const amountBMin = parseUnits((token1Amount * 0.95).toFixed(18), 18)
+    
+    writeContract({
+      address: CONTRACTS.ROUTER,
+      abi: [{
+        inputs: [
+          { name: 'tokenA', type: 'address' },
+          { name: 'tokenB', type: 'address' },
+          { name: 'liquidity', type: 'uint256' },
+          { name: 'amountAMin', type: 'uint256' },
+          { name: 'amountBMin', type: 'uint256' },
+          { name: 'to', type: 'address' },
+          { name: 'deadline', type: 'uint256' }
+        ],
+        name: 'removeLiquidity',
+        outputs: [{ name: 'amountA', type: 'uint256' }, { name: 'amountB', type: 'uint256' }],
+        stateMutability: 'nonpayable',
+        type: 'function'
+      }] as const,
+      functionName: 'removeLiquidity',
+      args: [
+        pool.token0.id as `0x${string}`,
+        pool.token1.id as `0x${string}`,
+        liquidity,
+        amountAMin,
+        amountBMin,
+        address,
+        deadline
+      ]
+    })
+  }
+  
+  useEffect(() => {
+    if (isSuccess) {
+      setTimeout(() => { onSuccess(); onClose() }, 2000)
+    }
+  }, [isSuccess, onClose, onSuccess])
+
   return (
-    <div className="glass-card overflow-hidden">
-      <div className="grid grid-cols-12 gap-4 px-4 py-3 bg-atlantis-800/50 text-xs text-gray-400 font-medium"><div className="col-span-4">Pool</div><div className="col-span-2 text-right">TVL</div><div className="col-span-2 text-right">Volume</div><div className="col-span-2 text-right">Txns</div><div className="col-span-2 text-right">Action</div></div>
-      <div className="divide-y divide-atlantis-700/30">{pools.map(pool => <PoolRow key={pool.id} pool={pool} />)}</div>
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="bg-[#191B1F] border border-[#2C2F36] rounded-3xl w-full max-w-md overflow-hidden"
+      >
+        <div className="flex items-center justify-between p-4 border-b border-[#2C2F36]">
+          <h2 className="text-lg font-semibold text-white">Remove Liquidity</h2>
+          <button onClick={onClose} className="p-2 hover:bg-[#2C2F36] rounded-lg transition-colors">
+            <X className="w-5 h-5 text-gray-400" />
+          </button>
+        </div>
+        
+        <div className="p-4 space-y-4">
+          {/* Pool Info */}
+          <div className="flex items-center gap-3 p-3 bg-[#212429] rounded-xl">
+            <TokenPairIcon token0={pool.token0.symbol} token1={pool.token1.symbol} />
+            <div>
+              <div className="font-semibold text-white">{pool.token0.symbol}/{pool.token1.symbol}</div>
+              <div className="text-sm text-gray-400">LP Balance: {formatNumber(lpBalance)}</div>
+            </div>
+          </div>
+          
+          {/* Percent Slider */}
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Amount to remove</span>
+              <span className="text-2xl font-bold text-white">{percent}%</span>
+            </div>
+            <input
+              type="range"
+              min="1"
+              max="100"
+              value={percent}
+              onChange={(e) => setPercent(parseInt(e.target.value))}
+              className="w-full h-2 bg-[#2C2F36] rounded-lg appearance-none cursor-pointer accent-[#2172E5]"
+            />
+            <div className="flex gap-2">
+              {[25, 50, 75, 100].map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setPercent(p)}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    percent === p ? 'bg-[#2172E5] text-white' : 'bg-[#2C2F36] text-gray-400 hover:bg-[#3C3F46]'
+                  }`}
+                >
+                  {p}%
+                </button>
+              ))}
+            </div>
+          </div>
+          
+          {/* Output Preview */}
+          <div className="bg-[#212429] rounded-2xl p-4 space-y-3">
+            <div className="text-sm text-gray-400 mb-2">You will receive</div>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-full bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center">
+                  <span className="text-[8px] font-bold">{pool.token0.symbol.slice(0, 2)}</span>
+                </div>
+                <span className="text-white">{pool.token0.symbol}</span>
+              </div>
+              <span className="text-white font-medium">{formatNumber(token0Amount)}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center">
+                  <span className="text-[8px] font-bold">{pool.token1.symbol.slice(0, 2)}</span>
+                </div>
+                <span className="text-white">{pool.token1.symbol}</span>
+              </div>
+              <span className="text-white font-medium">{formatNumber(token1Amount)}</span>
+            </div>
+          </div>
+          
+          {/* Action Button */}
+          {needsApproval ? (
+            <button
+              onClick={handleApprove}
+              disabled={isPending || isConfirming}
+              className="w-full py-4 bg-[#2172E5] hover:bg-[#1a5fc7] disabled:bg-[#2C2F36] disabled:text-gray-400 rounded-2xl font-semibold text-white transition-colors"
+            >
+              {isPending || isConfirming ? 'Approving...' : 'Approve LP Token'}
+            </button>
+          ) : (
+            <button
+              onClick={handleRemove}
+              disabled={isPending || isConfirming}
+              className="w-full py-4 bg-[#FF6B6B] hover:bg-[#ff5252] disabled:bg-[#2C2F36] disabled:text-gray-400 rounded-2xl font-semibold text-white transition-colors"
+            >
+              {isPending || isConfirming ? 'Removing...' : 'Remove Liquidity'}
+            </button>
+          )}
+          
+          {isSuccess && (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="text-center text-green-400 text-sm py-3 bg-green-500/10 rounded-xl border border-green-500/20">
+              ✓ Liquidity removed successfully!
+            </motion.div>
+          )}
+        </div>
+      </motion.div>
     </div>
   )
 }
 
-function PoolRow({ pool }: { pool: PoolData }) {
+
+// Position Card with Remove functionality
+function PositionCard({ position, onRefresh }: { position: PositionData; onRefresh: () => void }) {
+  const [expanded, setExpanded] = useState(false)
+  const [showRemoveModal, setShowRemoveModal] = useState(false)
+  const pool = position.pair
+  const lpBalance = parseFloat(position.liquidityTokenBalance) || 0
+  const totalSupply = parseFloat(pool.totalSupply) || 1
+  const sharePercent = (lpBalance / totalSupply) * 100
+  const reserve0 = parseFloat(pool.reserve0) || 0
+  const reserve1 = parseFloat(pool.reserve1) || 0
+  const pooledToken0 = (lpBalance / totalSupply) * reserve0
+  const pooledToken1 = (lpBalance / totalSupply) * reserve1
+  const positionValue = calculatePoolTVL(pool) * (lpBalance / totalSupply)
+
+  return (
+    <>
+      <motion.div layout className="bg-[#191B1F] border border-[#2C2F36] rounded-2xl overflow-hidden hover:border-[#3C3F46] transition-colors">
+        <button onClick={() => setExpanded(!expanded)} className="w-full p-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <TokenPairIcon token0={pool.token0.symbol} token1={pool.token1.symbol} />
+            <div className="text-left">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-white">{pool.token0.symbol}/{pool.token1.symbol}</span>
+                <FeeBadge />
+              </div>
+              <div className="text-sm text-gray-400">Full Range</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="text-right">
+              <div className="text-lg font-bold text-white">{formatUSD(positionValue)}</div>
+              <div className="text-xs text-green-400">● In range</div>
+            </div>
+            <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+          </div>
+        </button>
+        
+        <AnimatePresence>
+          {expanded && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="border-t border-[#2C2F36]"
+            >
+              <div className="p-4 space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-[#212429] rounded-xl p-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className="w-5 h-5 rounded-full bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center">
+                        <span className="text-[8px] font-bold">{pool.token0.symbol.slice(0, 2)}</span>
+                      </div>
+                      <span className="text-sm text-gray-400">{pool.token0.symbol}</span>
+                    </div>
+                    <div className="text-lg font-semibold text-white">{formatNumber(pooledToken0)}</div>
+                  </div>
+                  <div className="bg-[#212429] rounded-xl p-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className="w-5 h-5 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center">
+                        <span className="text-[8px] font-bold">{pool.token1.symbol.slice(0, 2)}</span>
+                      </div>
+                      <span className="text-sm text-gray-400">{pool.token1.symbol}</span>
+                    </div>
+                    <div className="text-lg font-semibold text-white">{formatNumber(pooledToken1)}</div>
+                  </div>
+                </div>
+                
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-gray-400">Pool Share</span>
+                    <span className="text-white font-medium">{sharePercent.toFixed(4)}%</span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-gray-400">LP Tokens</span>
+                    <span className="text-white font-medium">{formatNumber(lpBalance)}</span>
+                  </div>
+                </div>
+                
+                <div className="flex gap-2 pt-2">
+                  <a
+                    href={`https://monadexplorer.com/address/${pool.id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex-1 py-2.5 bg-[#2C2F36] hover:bg-[#3C3F46] text-white font-semibold rounded-xl transition-colors flex items-center justify-center gap-2"
+                  >
+                    <ExternalLink className="w-4 h-4" /> View Pool
+                  </a>
+                  <button
+                    onClick={() => setShowRemoveModal(true)}
+                    className="flex-1 py-2.5 bg-[#FF6B6B]/20 hover:bg-[#FF6B6B]/30 text-[#FF6B6B] font-semibold rounded-xl transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Minus className="w-4 h-4" /> Remove
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+      
+      <AnimatePresence>
+        {showRemoveModal && (
+          <RemoveLiquidityModal
+            position={position}
+            onClose={() => setShowRemoveModal(false)}
+            onSuccess={onRefresh}
+          />
+        )}
+      </AnimatePresence>
+    </>
+  )
+}
+
+// Pool Row
+function PoolRow({ pool, onSelect }: { pool: PoolData; onSelect: () => void }) {
   const tvl = calculatePoolTVL(pool)
   const volume = calculatePoolVolume(pool)
-  return (
-    <div className="grid grid-cols-12 gap-4 px-4 py-4 hover:bg-atlantis-800/30 transition-colors items-center">
-      <div className="col-span-4 flex items-center gap-3"><div className="flex -space-x-2"><TokenIcon symbol={pool.token0.symbol} /><TokenIcon symbol={pool.token1.symbol} /></div><div><div className="font-semibold text-white">{pool.token0.symbol}/{pool.token1.symbol}</div><div className="text-xs text-gray-500">{parseInt(pool.liquidityProviderCount || '0')} LPs</div></div></div>
-      <div className="col-span-2 text-right"><div className="text-white font-medium">{formatUSD(tvl)}</div></div>
-      <div className="col-span-2 text-right"><div className="text-white font-medium">{formatUSD(volume)}</div></div>
-      <div className="col-span-2 text-right"><div className="text-white font-medium">{parseInt(pool.txCount || '0').toLocaleString()}</div></div>
-      <div className="col-span-2 text-right"><a href={`https://monadexplorer.com/address/${pool.id}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-primary-400 hover:text-primary-300 text-sm">View <ExternalLink className="w-3 h-3" /></a></div>
-    </div>
-  )
-}
-
-
-interface PositionData { pair: PoolData; liquidityTokenBalance: string }
-
-function MyPositions({ address, isConnected, onAddLiquidity }: { address?: string; isConnected: boolean; onAddLiquidity: () => void }) {
-  const [positions, setPositions] = useState<PositionData[]>([])
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    if (!address) { setLoading(false); return }
-    const fetchPositions = async () => {
-      try {
-        const response = await fetch(SUBGRAPH_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: `{ liquidityPositions(where: { user: "${address.toLowerCase()}", liquidityTokenBalance_gt: "0" }) { id liquidityTokenBalance pair { id token0 { id symbol name } token1 { id symbol name } reserve0 reserve1 totalSupply txCount liquidityProviderCount } } }` }) })
-        const result = await response.json()
-        setPositions(result.data?.liquidityPositions || [])
-      } catch (err) { console.error('Failed to fetch positions:', err) }
-      finally { setLoading(false) }
-    }
-    fetchPositions()
-  }, [address])
-
-  if (!isConnected) return <div className="glass-card p-8 text-center"><Users className="w-12 h-12 text-gray-600 mx-auto mb-4" /><h3 className="text-lg font-semibold text-white mb-2">Connect Wallet</h3><p className="text-gray-400">Connect your wallet to view your liquidity positions</p></div>
-  if (loading) return <div className="glass-card p-6"><div className="space-y-4">{[1, 2].map(i => <div key={i} className="h-20 bg-atlantis-700/30 rounded-xl animate-pulse" />)}</div></div>
-  if (positions.length === 0) return <div className="glass-card p-8 text-center"><Droplets className="w-12 h-12 text-gray-600 mx-auto mb-4" /><h3 className="text-lg font-semibold text-white mb-2">No Positions</h3><p className="text-gray-400 mb-4">You don't have any liquidity positions yet</p><button onClick={onAddLiquidity} className="gradient-button px-6 py-2">Add Liquidity</button></div>
+  const apr = tvl > 0 ? ((volume * 0.005 * 365) / tvl) * 100 : 0
 
   return (
-    <div className="space-y-4">
-      {positions.map(pos => {
-        const pool = pos.pair
-        const lpBalance = parseFloat(pos.liquidityTokenBalance) || 0
-        const totalSupply = parseFloat(pool.totalSupply) || 1
-        const sharePercent = (lpBalance / totalSupply) * 100
-        const reserve0 = parseFloat(pool.reserve0) || 0
-        const reserve1 = parseFloat(pool.reserve1) || 0
-        const pooledToken0 = (lpBalance / totalSupply) * reserve0
-        const pooledToken1 = (lpBalance / totalSupply) * reserve1
-        const positionValue = calculatePoolTVL(pool) * (lpBalance / totalSupply)
-        return (
-          <div key={pool.id} className="glass-card p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-3"><div className="flex -space-x-2"><TokenIcon symbol={pool.token0.symbol} /><TokenIcon symbol={pool.token1.symbol} /></div><div><div className="font-semibold text-white">{pool.token0.symbol}/{pool.token1.symbol}</div><div className="text-xs text-gray-500">{sharePercent.toFixed(4)}% pool share</div></div></div>
-              <div className="text-right"><div className="text-lg font-bold text-primary-400">{formatUSD(positionValue)}</div></div>
-            </div>
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div className="bg-atlantis-800/30 rounded-lg p-2"><div className="text-gray-500 text-xs">Pooled {pool.token0.symbol}</div><div className="text-white font-medium">{pooledToken0.toFixed(6)}</div></div>
-              <div className="bg-atlantis-800/30 rounded-lg p-2"><div className="text-gray-500 text-xs">Pooled {pool.token1.symbol}</div><div className="text-white font-medium">{pooledToken1.toFixed(6)}</div></div>
-            </div>
-            <div className="mt-3 text-xs text-gray-500">LP Tokens: {lpBalance.toFixed(6)}</div>
+    <motion.div
+      whileHover={{ backgroundColor: 'rgba(44, 47, 54, 0.5)' }}
+      className="grid grid-cols-12 gap-4 px-4 py-4 items-center cursor-pointer border-b border-[#2C2F36] last:border-0"
+      onClick={onSelect}
+    >
+      <div className="col-span-4 flex items-center gap-3">
+        <TokenPairIcon token0={pool.token0.symbol} token1={pool.token1.symbol} />
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-white">{pool.token0.symbol}/{pool.token1.symbol}</span>
+            <FeeBadge />
           </div>
-        )
-      })}
-    </div>
+          <div className="text-xs text-gray-500">{parseInt(pool.liquidityProviderCount || '0')} LPs</div>
+        </div>
+      </div>
+      <div className="col-span-2 text-right">
+        <div className="text-white font-medium">{formatUSD(tvl)}</div>
+      </div>
+      <div className="col-span-2 text-right">
+        <div className="text-white font-medium">{formatUSD(volume)}</div>
+      </div>
+      <div className="col-span-2 text-right">
+        <div className="text-green-400 font-medium">{apr.toFixed(2)}%</div>
+      </div>
+      <div className="col-span-2 text-right">
+        <a
+          href={`https://monadexplorer.com/address/${pool.id}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="inline-flex items-center gap-1 text-[#2172E5] hover:text-[#4d94ff] text-sm font-medium"
+        >
+          View <ArrowUpRight className="w-3 h-3" />
+        </a>
+      </div>
+    </motion.div>
   )
 }
 
-function AddLiquidityModal({ onClose }: { onClose: () => void }) {
+
+// Add Liquidity Modal - Multi-Token Support
+function AddLiquidityModal({ onClose, onSuccess, preselectedPool }: { onClose: () => void; onSuccess: () => void; preselectedPool?: PoolData }) {
   const { address, isConnected } = useAccount()
-  const [tokenA, setTokenA] = useState<Token>(DEFAULT_TOKENS[1])
-  const [tokenB, setTokenB] = useState<Token>(DEFAULT_TOKENS[2])
+  const allTokens = [...DEFAULT_TOKENS.filter(t => !t.isNative), ...getStoredTokens()]
+  
+  const [tokenA, setTokenA] = useState<Token>(preselectedPool 
+    ? { address: preselectedPool.token0.id as `0x${string}`, symbol: preselectedPool.token0.symbol, name: preselectedPool.token0.name, decimals: 18 }
+    : allTokens[0])
+  const [tokenB, setTokenB] = useState<Token>(preselectedPool 
+    ? { address: preselectedPool.token1.id as `0x${string}`, symbol: preselectedPool.token1.symbol, name: preselectedPool.token1.name, decimals: 18 }
+    : allTokens[1])
   const [amountA, setAmountA] = useState('')
   const [amountB, setAmountB] = useState('')
   const [showTokenModal, setShowTokenModal] = useState<'A' | 'B' | null>(null)
-  const { writeContract, data: hash, isPending } = useWriteContract()
+  
+  const { writeContract, data: hash, isPending, reset } = useWriteContract()
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })
-  const { data: allowanceA } = useReadContract({ address: tokenA.address as `0x${string}`, abi: ERC20_ABI, functionName: 'allowance', args: address ? [address, CONTRACTS.ROUTER] : undefined, query: { enabled: !!address } })
-  const { data: allowanceB } = useReadContract({ address: tokenB.address as `0x${string}`, abi: ERC20_ABI, functionName: 'allowance', args: address ? [address, CONTRACTS.ROUTER] : undefined, query: { enabled: !!address } })
-  const { data: balanceA } = useReadContract({ address: tokenA.address as `0x${string}`, abi: ERC20_ABI, functionName: 'balanceOf', args: address ? [address] : undefined, query: { enabled: !!address } })
-  const { data: balanceB } = useReadContract({ address: tokenB.address as `0x${string}`, abi: ERC20_ABI, functionName: 'balanceOf', args: address ? [address] : undefined, query: { enabled: !!address } })
-  const needsApprovalA = allowanceA !== undefined && amountA ? allowanceA < parseUnits(amountA || '0', 18) : false
-  const needsApprovalB = allowanceB !== undefined && amountB ? allowanceB < parseUnits(amountB || '0', 18) : false
-  const handleApprove = (token: Token) => { writeContract({ address: token.address as `0x${string}`, abi: ERC20_ABI, functionName: 'approve', args: [CONTRACTS.ROUTER, parseUnits('999999999', 18)] }) }
-  const handleAddLiquidity = () => { if (!address || !amountA || !amountB) return; const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60); const amountAWei = parseUnits(amountA, 18); const amountBWei = parseUnits(amountB, 18); writeContract({ address: CONTRACTS.ROUTER, abi: ROUTER_ABI, functionName: 'addLiquidity', args: [tokenA.address as `0x${string}`, tokenB.address as `0x${string}`, amountAWei, amountBWei, amountAWei * 95n / 100n, amountBWei * 95n / 100n, address, deadline] }) }
-  const handleTokenSelect = (token: Token, type: 'A' | 'B') => { if (type === 'A') { if (token.address === tokenB.address) setTokenB(tokenA); setTokenA(token) } else { if (token.address === tokenA.address) setTokenA(tokenB); setTokenB(token) }; setShowTokenModal(null) }
-  useEffect(() => { if (isSuccess) setTimeout(onClose, 2000) }, [isSuccess, onClose])
+  
+  const { data: allowanceA, refetch: refetchAllowanceA } = useReadContract({
+    address: tokenA.address,
+    abi: ERC20_ABI,
+    functionName: 'allowance',
+    args: address ? [address, CONTRACTS.ROUTER] : undefined,
+    query: { enabled: !!address && !!tokenA.address }
+  })
+  
+  const { data: allowanceB, refetch: refetchAllowanceB } = useReadContract({
+    address: tokenB.address,
+    abi: ERC20_ABI,
+    functionName: 'allowance',
+    args: address ? [address, CONTRACTS.ROUTER] : undefined,
+    query: { enabled: !!address && !!tokenB.address }
+  })
+  
+  const { data: balanceA } = useReadContract({
+    address: tokenA.address,
+    abi: ERC20_ABI,
+    functionName: 'balanceOf',
+    args: address ? [address] : undefined,
+    query: { enabled: !!address && !!tokenA.address }
+  })
+  
+  const { data: balanceB } = useReadContract({
+    address: tokenB.address,
+    abi: ERC20_ABI,
+    functionName: 'balanceOf',
+    args: address ? [address] : undefined,
+    query: { enabled: !!address && !!tokenB.address }
+  })
+  
+  const needsApprovalA = allowanceA !== undefined && amountA && parseFloat(amountA) > 0 
+    ? allowanceA < parseUnits(amountA || '0', tokenA.decimals) 
+    : false
+  const needsApprovalB = allowanceB !== undefined && amountB && parseFloat(amountB) > 0 
+    ? allowanceB < parseUnits(amountB || '0', tokenB.decimals) 
+    : false
+  
+  const [approvalStep, setApprovalStep] = useState<'none' | 'A' | 'B'>('none')
+  
+  const handleApprove = (token: Token, type: 'A' | 'B') => {
+    setApprovalStep(type)
+    writeContract({
+      address: token.address,
+      abi: ERC20_ABI,
+      functionName: 'approve',
+      args: [CONTRACTS.ROUTER, parseUnits('999999999999', token.decimals)]
+    })
+  }
+  
+  const handleAddLiquidity = () => {
+    if (!address || !amountA || !amountB) return
+    setApprovalStep('none')
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60)
+    const amountAWei = parseUnits(amountA, tokenA.decimals)
+    const amountBWei = parseUnits(amountB, tokenB.decimals)
+    writeContract({
+      address: CONTRACTS.ROUTER,
+      abi: ROUTER_ABI,
+      functionName: 'addLiquidity',
+      args: [
+        tokenA.address,
+        tokenB.address,
+        amountAWei,
+        amountBWei,
+        amountAWei * 95n / 100n,
+        amountBWei * 95n / 100n,
+        address,
+        deadline
+      ]
+    })
+  }
+  
+  const handleTokenSelect = (token: Token, type: 'A' | 'B') => {
+    if (type === 'A') {
+      if (token.address === tokenB.address) setTokenB(tokenA)
+      setTokenA(token)
+    } else {
+      if (token.address === tokenA.address) setTokenA(tokenB)
+      setTokenB(token)
+    }
+    setShowTokenModal(null)
+  }
+  
+  // Refetch allowances after approval
+  useEffect(() => {
+    if (isSuccess && approvalStep !== 'none') {
+      setTimeout(() => {
+        if (approvalStep === 'A') refetchAllowanceA()
+        if (approvalStep === 'B') refetchAllowanceB()
+        reset()
+        setApprovalStep('none')
+      }, 1000)
+    }
+  }, [isSuccess, approvalStep, refetchAllowanceA, refetchAllowanceB, reset])
+  
+  // Close on successful liquidity add
+  useEffect(() => {
+    if (isSuccess && approvalStep === 'none') {
+      setTimeout(() => { onSuccess(); onClose() }, 2000)
+    }
+  }, [isSuccess, approvalStep, onClose, onSuccess])
+
+  const getGradient = (symbol: string) => {
+    const colors: Record<string, string> = {
+      'WMON': 'from-purple-500 to-indigo-600',
+      'MON': 'from-purple-500 to-indigo-600',
+      'QUICK': 'from-blue-500 to-cyan-500',
+    }
+    return colors[symbol] || 'from-pink-500 to-purple-600'
+  }
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="glass-card w-full max-w-md p-5 relative">
-        <button onClick={onClose} className="absolute top-4 right-4 text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
-        <h2 className="text-xl font-bold text-white mb-5">Add Liquidity</h2>
-        <div className="bg-atlantis-800/40 rounded-xl p-4 mb-3">
-          <div className="flex justify-between text-sm text-gray-400 mb-2"><span>Token A</span><span>Balance: {balanceA ? parseFloat(formatUnits(balanceA, 18)).toFixed(4) : '0'}</span></div>
-          <div className="flex gap-3"><input type="number" value={amountA} onChange={(e) => setAmountA(e.target.value)} placeholder="0" className="flex-1 bg-transparent text-2xl font-semibold text-white outline-none" /><button onClick={() => setShowTokenModal('A')} className="flex items-center gap-2 bg-atlantis-700/60 rounded-xl px-3 py-2"><TokenIcon symbol={tokenA.symbol} /><span className="font-semibold text-white">{tokenA.symbol}</span><ChevronDown className="w-4 h-4 text-gray-400" /></button></div>
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="bg-[#191B1F] border border-[#2C2F36] rounded-3xl w-full max-w-md overflow-hidden"
+      >
+        <div className="flex items-center justify-between p-4 border-b border-[#2C2F36]">
+          <h2 className="text-lg font-semibold text-white">Add Liquidity</h2>
+          <div className="flex items-center gap-2">
+            <button className="p-2 hover:bg-[#2C2F36] rounded-lg transition-colors">
+              <Settings className="w-5 h-5 text-gray-400" />
+            </button>
+            <button onClick={onClose} className="p-2 hover:bg-[#2C2F36] rounded-lg transition-colors">
+              <X className="w-5 h-5 text-gray-400" />
+            </button>
+          </div>
         </div>
-        <div className="flex justify-center -my-1 relative z-10"><div className="w-8 h-8 bg-atlantis-900 border-4 border-atlantis-950 rounded-lg flex items-center justify-center"><Plus className="w-4 h-4 text-gray-400" /></div></div>
-        <div className="bg-atlantis-800/40 rounded-xl p-4 mt-3 mb-4">
-          <div className="flex justify-between text-sm text-gray-400 mb-2"><span>Token B</span><span>Balance: {balanceB ? parseFloat(formatUnits(balanceB, 18)).toFixed(4) : '0'}</span></div>
-          <div className="flex gap-3"><input type="number" value={amountB} onChange={(e) => setAmountB(e.target.value)} placeholder="0" className="flex-1 bg-transparent text-2xl font-semibold text-white outline-none" /><button onClick={() => setShowTokenModal('B')} className="flex items-center gap-2 bg-atlantis-700/60 rounded-xl px-3 py-2"><TokenIcon symbol={tokenB.symbol} /><span className="font-semibold text-white">{tokenB.symbol}</span><ChevronDown className="w-4 h-4 text-gray-400" /></button></div>
+
+        <div className="p-4 space-y-3">
+          {/* Token A */}
+          <div className="bg-[#212429] rounded-2xl p-4">
+            <div className="flex justify-between text-sm mb-2">
+              <span className="text-gray-400">You deposit</span>
+              <button 
+                onClick={() => balanceA && setAmountA(formatUnits(balanceA, tokenA.decimals))}
+                className="text-gray-400 hover:text-white transition-colors"
+              >
+                Balance: {balanceA ? parseFloat(formatUnits(balanceA, tokenA.decimals)).toFixed(4) : '0'}
+              </button>
+            </div>
+            <div className="flex items-center gap-3">
+              <input
+                type="number"
+                value={amountA}
+                onChange={(e) => setAmountA(e.target.value)}
+                placeholder="0"
+                className="flex-1 bg-transparent text-3xl font-medium text-white outline-none placeholder-gray-600 min-w-0"
+              />
+              <button
+                onClick={() => setShowTokenModal('A')}
+                className="flex items-center gap-2 bg-[#2C2F36] hover:bg-[#3C3F46] rounded-2xl px-3 py-2 transition-colors shrink-0"
+              >
+                <div className={`w-6 h-6 rounded-full bg-gradient-to-br ${getGradient(tokenA.symbol)} flex items-center justify-center`}>
+                  <span className="text-[8px] font-bold text-white">{tokenA.symbol.slice(0, 2)}</span>
+                </div>
+                <span className="font-semibold text-white">{tokenA.symbol}</span>
+                <ChevronDown className="w-4 h-4 text-gray-400" />
+              </button>
+            </div>
+          </div>
+
+          {/* Plus Icon */}
+          <div className="flex justify-center -my-1 relative z-10">
+            <div className="w-10 h-10 bg-[#191B1F] border-4 border-[#212429] rounded-xl flex items-center justify-center">
+              <Plus className="w-5 h-5 text-gray-400" />
+            </div>
+          </div>
+
+          {/* Token B */}
+          <div className="bg-[#212429] rounded-2xl p-4">
+            <div className="flex justify-between text-sm mb-2">
+              <span className="text-gray-400">You deposit</span>
+              <button 
+                onClick={() => balanceB && setAmountB(formatUnits(balanceB, tokenB.decimals))}
+                className="text-gray-400 hover:text-white transition-colors"
+              >
+                Balance: {balanceB ? parseFloat(formatUnits(balanceB, tokenB.decimals)).toFixed(4) : '0'}
+              </button>
+            </div>
+            <div className="flex items-center gap-3">
+              <input
+                type="number"
+                value={amountB}
+                onChange={(e) => setAmountB(e.target.value)}
+                placeholder="0"
+                className="flex-1 bg-transparent text-3xl font-medium text-white outline-none placeholder-gray-600 min-w-0"
+              />
+              <button
+                onClick={() => setShowTokenModal('B')}
+                className="flex items-center gap-2 bg-[#2C2F36] hover:bg-[#3C3F46] rounded-2xl px-3 py-2 transition-colors shrink-0"
+              >
+                <div className={`w-6 h-6 rounded-full bg-gradient-to-br ${getGradient(tokenB.symbol)} flex items-center justify-center`}>
+                  <span className="text-[8px] font-bold text-white">{tokenB.symbol.slice(0, 2)}</span>
+                </div>
+                <span className="font-semibold text-white">{tokenB.symbol}</span>
+                <ChevronDown className="w-4 h-4 text-gray-400" />
+              </button>
+            </div>
+          </div>
+
+          {/* Fee Tier */}
+          <div className="bg-[#212429] rounded-2xl p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-gray-400 text-sm">Fee tier</span>
+                <Info className="w-4 h-4 text-gray-500" />
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-white font-medium">0.5%</span>
+                <span className="text-xs text-gray-500 bg-[#2C2F36] px-2 py-0.5 rounded">Best for most pairs</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Action Buttons */}
+          {!isConnected ? (
+            <button className="w-full py-4 bg-[#2C2F36] rounded-2xl font-semibold text-gray-400 cursor-not-allowed">
+              Connect Wallet
+            </button>
+          ) : needsApprovalA ? (
+            <button
+              onClick={() => handleApprove(tokenA, 'A')}
+              disabled={isPending || isConfirming}
+              className="w-full py-4 bg-[#2172E5] hover:bg-[#1a5fc7] disabled:bg-[#2C2F36] disabled:text-gray-400 rounded-2xl font-semibold text-white transition-colors"
+            >
+              {isPending || isConfirming ? 'Approving...' : `Approve ${tokenA.symbol}`}
+            </button>
+          ) : needsApprovalB ? (
+            <button
+              onClick={() => handleApprove(tokenB, 'B')}
+              disabled={isPending || isConfirming}
+              className="w-full py-4 bg-[#2172E5] hover:bg-[#1a5fc7] disabled:bg-[#2C2F36] disabled:text-gray-400 rounded-2xl font-semibold text-white transition-colors"
+            >
+              {isPending || isConfirming ? 'Approving...' : `Approve ${tokenB.symbol}`}
+            </button>
+          ) : (
+            <button
+              onClick={handleAddLiquidity}
+              disabled={isPending || isConfirming || !amountA || !amountB || parseFloat(amountA) <= 0 || parseFloat(amountB) <= 0}
+              className="w-full py-4 bg-[#2172E5] hover:bg-[#1a5fc7] disabled:bg-[#2C2F36] disabled:text-gray-400 rounded-2xl font-semibold text-white transition-colors"
+            >
+              {isPending || isConfirming ? 'Adding Liquidity...' : 'Add Liquidity'}
+            </button>
+          )}
+
+          {isSuccess && approvalStep === 'none' && (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="text-center text-green-400 text-sm py-3 bg-green-500/10 rounded-xl border border-green-500/20">
+              ✓ Liquidity added successfully!
+            </motion.div>
+          )}
         </div>
-        {!isConnected ? <button className="w-full py-3 bg-atlantis-700/50 rounded-xl font-semibold text-gray-400 cursor-not-allowed">Connect Wallet</button> : needsApprovalA ? <button onClick={() => handleApprove(tokenA)} disabled={isPending || isConfirming} className="w-full py-3 bg-gradient-to-r from-amber-500 to-orange-500 rounded-xl font-bold text-white">{isPending || isConfirming ? 'Approving...' : `Approve ${tokenA.symbol}`}</button> : needsApprovalB ? <button onClick={() => handleApprove(tokenB)} disabled={isPending || isConfirming} className="w-full py-3 bg-gradient-to-r from-amber-500 to-orange-500 rounded-xl font-bold text-white">{isPending || isConfirming ? 'Approving...' : `Approve ${tokenB.symbol}`}</button> : <button onClick={handleAddLiquidity} disabled={isPending || isConfirming || !amountA || !amountB} className="w-full py-3 gradient-button font-bold">{isPending || isConfirming ? 'Adding Liquidity...' : 'Add Liquidity'}</button>}
-        {isSuccess && <div className="mt-3 text-center text-green-400 text-sm py-2 bg-green-500/10 rounded-xl">✓ Liquidity added!</div>}
-        {showTokenModal && <TokenModal onSelect={(token) => handleTokenSelect(token, showTokenModal)} onClose={() => setShowTokenModal(null)} onImport={() => {}} />}
-      </div>
+
+        {showTokenModal && (
+          <TokenModal
+            onSelect={(token) => handleTokenSelect(token, showTokenModal)}
+            onClose={() => setShowTokenModal(null)}
+            onImport={() => {}}
+          />
+        )}
+      </motion.div>
     </div>
   )
 }
 
 
+// Main LiquidityCard Component
 export function LiquidityCard() {
   const { address, isConnected } = useAccount()
-  const [activeTab, setActiveTab] = useState<PoolTab>('pools')
-  const [showAddForm, setShowAddForm] = useState(false)
+  const [activeTab, setActiveTab] = useState<'pools' | 'positions'>('pools')
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [selectedPool, setSelectedPool] = useState<PoolData | undefined>()
   const [pools, setPools] = useState<PoolData[]>([])
-  const [factory, setFactory] = useState<FactoryData | null>(null)
+  const [positions, setPositions] = useState<PositionData[]>([])
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
-  const [refreshing, setRefreshing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
   const fetchData = async () => {
-    setRefreshing(true)
-    setError(null)
+    setLoading(true)
     try {
-      const response = await fetch(SUBGRAPH_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: `{ factories(first: 1) { pairCount txCount } pairs(first: 50, orderBy: txCount, orderDirection: desc) { id token0 { id symbol name } token1 { id symbol name } reserve0 reserve1 volumeToken0 volumeToken1 txCount totalSupply liquidityProviderCount } }` }) })
-      const { data, errors } = await response.json()
-      if (errors) { setError(errors[0]?.message || 'Subgraph error'); return }
-      setPools(data?.pairs || [])
-      setFactory(data?.factories?.[0] || null)
-    } catch (err) { console.error('Failed to fetch pools:', err); setError('Network error') }
-    finally { setLoading(false); setRefreshing(false) }
+      const poolsRes = await fetch(SUBGRAPH_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: `{
+            pairs(first: 50, orderBy: txCount, orderDirection: desc) {
+              id
+              token0 { id symbol name }
+              token1 { id symbol name }
+              reserve0
+              reserve1
+              volumeToken0
+              volumeToken1
+              txCount
+              totalSupply
+              liquidityProviderCount
+            }
+          }`
+        })
+      })
+      const poolsData = await poolsRes.json()
+      if (poolsData.data?.pairs) setPools(poolsData.data.pairs)
+
+      if (address) {
+        const posRes = await fetch(SUBGRAPH_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            query: `{
+              user(id: "${address.toLowerCase()}") {
+                liquidityPositions(where: { liquidityTokenBalance_gt: "0" }) {
+                  liquidityTokenBalance
+                  pair {
+                    id
+                    token0 { id symbol name }
+                    token1 { id symbol name }
+                    reserve0
+                    reserve1
+                    volumeToken0
+                    volumeToken1
+                    txCount
+                    totalSupply
+                    liquidityProviderCount
+                  }
+                }
+              }
+            }`
+          })
+        })
+        const posData = await posRes.json()
+        if (posData.data?.user?.liquidityPositions) setPositions(posData.data.user.liquidityPositions)
+        else setPositions([])
+      }
+    } catch (err) {
+      console.error('Failed to fetch pool data:', err)
+    }
+    setLoading(false)
   }
 
-  useEffect(() => { fetchData(); const interval = setInterval(fetchData, 30000); return () => clearInterval(interval) }, [])
+  useEffect(() => { fetchData() }, [address])
 
-  const filteredPools = pools.filter(pool => pool.token0.symbol.toLowerCase().includes(searchQuery.toLowerCase()) || pool.token1.symbol.toLowerCase().includes(searchQuery.toLowerCase()))
-  const totalTVL = pools.reduce((acc, pool) => acc + calculatePoolTVL(pool), 0)
-  const totalVolume = pools.reduce((acc, pool) => acc + calculatePoolVolume(pool), 0)
-  const totalTxCount = factory ? parseInt(factory.txCount) : pools.reduce((acc, pool) => acc + parseInt(pool.txCount || '0'), 0)
+  const totalTVL = pools.reduce((sum, p) => sum + calculatePoolTVL(p), 0)
+  const totalVolume = pools.reduce((sum, p) => sum + calculatePoolVolume(p), 0)
   const totalFees = totalVolume * 0.005
-  const totalLPs = pools.reduce((acc, p) => acc + parseInt(p.liquidityProviderCount || '0'), 0)
+  const totalLPs = pools.reduce((sum, p) => sum + parseInt(p.liquidityProviderCount || '0'), 0)
+
+  const filteredPools = pools.filter(p =>
+    p.token0.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    p.token1.symbol.toLowerCase().includes(searchQuery.toLowerCase())
+  )
+
+  const handlePoolSelect = (pool: PoolData) => {
+    setSelectedPool(pool)
+    setShowAddModal(true)
+  }
 
   return (
-    <div className="w-full max-w-4xl mx-auto space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard icon={<DollarSign className="w-5 h-5" />} label="Total Liquidity" value={formatUSD(totalTVL)} subValue={`${factory?.pairCount || pools.length} pools`} color="primary" loading={loading} />
-        <StatCard icon={<TrendingUp className="w-5 h-5" />} label="Total Volume" value={formatUSD(totalVolume)} subValue={`${totalTxCount.toLocaleString()} txns`} color="secondary" loading={loading} />
-        <StatCard icon={<Droplets className="w-5 h-5" />} label="Total Fees" value={formatUSD(totalFees)} subValue="0.5% fee" color="cyan" loading={loading} />
-        <StatCard icon={<Users className="w-5 h-5" />} label="LP Providers" value={totalLPs.toString()} subValue="unique" color="green" loading={loading} />
-      </div>
-      {error && <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400 text-sm flex items-center justify-between"><span>⚠️ {error}</span><button onClick={fetchData} className="text-red-300 hover:text-white">Retry</button></div>}
-      <div className="glass-card p-2">
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex gap-1 bg-atlantis-800/50 p-1 rounded-xl">
-            <button onClick={() => setActiveTab('pools')} className={`px-4 py-2 rounded-lg font-medium transition-all ${activeTab === 'pools' ? 'bg-primary-500 text-white' : 'text-gray-400 hover:text-white'}`}>Pools</button>
-            <button onClick={() => setActiveTab('positions')} className={`px-4 py-2 rounded-lg font-medium transition-all ${activeTab === 'positions' ? 'bg-primary-500 text-white' : 'text-gray-400 hover:text-white'}`}>My Positions</button>
+    <div className="space-y-6">
+      {/* Stats Header */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+        <div className="bg-[#191B1F] border border-[#2C2F36] rounded-2xl p-4">
+          <div className="flex items-center gap-2 text-gray-400 text-sm mb-1">
+            <Layers className="w-4 h-4" />
+            <span>TVL</span>
           </div>
-          <div className="flex items-center gap-2 flex-1 justify-end">
-            <div className="relative max-w-xs flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" /><input type="text" placeholder="Search pools..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full bg-atlantis-800/50 border border-atlantis-700/50 rounded-xl pl-10 pr-4 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-primary-500/50" /></div>
-            <button onClick={fetchData} disabled={refreshing} className="p-2 bg-atlantis-800/50 border border-atlantis-700/50 rounded-xl hover:border-primary-500/50 transition-all" title="Refresh"><RefreshCw className={`w-4 h-4 text-gray-400 ${refreshing ? 'animate-spin' : ''}`} /></button>
-            <button onClick={() => setShowAddForm(true)} className="gradient-button px-4 py-2 flex items-center gap-2"><Plus className="w-4 h-4" /><span className="hidden sm:inline">Add Liquidity</span></button>
+          <div className="text-xl md:text-2xl font-bold text-white">{formatUSD(totalTVL)}</div>
+        </div>
+        <div className="bg-[#191B1F] border border-[#2C2F36] rounded-2xl p-4">
+          <div className="flex items-center gap-2 text-gray-400 text-sm mb-1">
+            <BarChart3 className="w-4 h-4" />
+            <span>Volume</span>
           </div>
+          <div className="text-xl md:text-2xl font-bold text-white">{formatUSD(totalVolume)}</div>
+        </div>
+        <div className="bg-[#191B1F] border border-[#2C2F36] rounded-2xl p-4">
+          <div className="flex items-center gap-2 text-gray-400 text-sm mb-1">
+            <Wallet className="w-4 h-4" />
+            <span>Fees (0.5%)</span>
+          </div>
+          <div className="text-xl md:text-2xl font-bold text-white">{formatUSD(totalFees)}</div>
+        </div>
+        <div className="bg-[#191B1F] border border-[#2C2F36] rounded-2xl p-4">
+          <div className="flex items-center gap-2 text-gray-400 text-sm mb-1">
+            <Wallet className="w-4 h-4" />
+            <span>LP Providers</span>
+          </div>
+          <div className="text-xl md:text-2xl font-bold text-white">{totalLPs}</div>
         </div>
       </div>
-      {activeTab === 'pools' ? <PoolsTable pools={filteredPools} loading={loading} onAddLiquidity={() => setShowAddForm(true)} /> : <MyPositions address={address} isConnected={isConnected} onAddLiquidity={() => setShowAddForm(true)} />}
-      {showAddForm && <AddLiquidityModal onClose={() => setShowAddForm(false)} />}
+
+      {/* Main Card */}
+      <div className="bg-[#191B1F] border border-[#2C2F36] rounded-3xl overflow-hidden">
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 border-b border-[#2C2F36]">
+          <div className="flex items-center gap-1 bg-[#212429] rounded-xl p-1">
+            <button
+              onClick={() => setActiveTab('pools')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                activeTab === 'pools' ? 'bg-[#2C2F36] text-white' : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              Pools
+            </button>
+            <button
+              onClick={() => setActiveTab('positions')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                activeTab === 'positions' ? 'bg-[#2C2F36] text-white' : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              My Positions {positions.length > 0 && <span className="ml-1 px-1.5 py-0.5 bg-[#2172E5] rounded text-xs">{positions.length}</span>}
+            </button>
+          </div>
+          <div className="flex items-center gap-3 w-full sm:w-auto">
+            <button onClick={fetchData} className="p-2 hover:bg-[#2C2F36] rounded-lg transition-colors">
+              <RefreshCw className={`w-5 h-5 text-gray-400 ${loading ? 'animate-spin' : ''}`} />
+            </button>
+            <button
+              onClick={() => { setSelectedPool(undefined); setShowAddModal(true) }}
+              className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2 bg-[#2172E5] hover:bg-[#1a5fc7] text-white font-semibold rounded-xl transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              New Position
+            </button>
+          </div>
+        </div>
+
+        {/* Content */}
+        {activeTab === 'pools' ? (
+          <div>
+            <div className="p-4 border-b border-[#2C2F36]">
+              <input
+                type="text"
+                placeholder="Search pools by token..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-[#212429] border border-[#2C2F36] rounded-xl px-4 py-3 text-white placeholder-gray-500 outline-none focus:border-[#2172E5] transition-colors"
+              />
+            </div>
+
+            {/* Desktop Table Header */}
+            <div className="hidden md:grid grid-cols-12 gap-4 px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-[#2C2F36]">
+              <div className="col-span-4">Pool</div>
+              <div className="col-span-2 text-right">TVL</div>
+              <div className="col-span-2 text-right">Volume</div>
+              <div className="col-span-2 text-right">APR</div>
+              <div className="col-span-2 text-right">Actions</div>
+            </div>
+
+            {loading ? (
+              <div className="flex items-center justify-center py-12">
+                <RefreshCw className="w-8 h-8 text-gray-500 animate-spin" />
+              </div>
+            ) : filteredPools.length === 0 ? (
+              <div className="text-center py-12 text-gray-500">
+                {searchQuery ? 'No pools found' : 'No pools available'}
+              </div>
+            ) : (
+              <>
+                {/* Desktop View */}
+                <div className="hidden md:block">
+                  {filteredPools.map((pool) => (
+                    <PoolRow key={pool.id} pool={pool} onSelect={() => handlePoolSelect(pool)} />
+                  ))}
+                </div>
+                {/* Mobile View */}
+                <div className="md:hidden p-4 space-y-3">
+                  {filteredPools.map((pool) => {
+                    const tvl = calculatePoolTVL(pool)
+                    const volume = calculatePoolVolume(pool)
+                    const apr = tvl > 0 ? ((volume * 0.005 * 365) / tvl) * 100 : 0
+                    return (
+                      <div
+                        key={pool.id}
+                        onClick={() => handlePoolSelect(pool)}
+                        className="bg-[#212429] rounded-xl p-4 cursor-pointer hover:bg-[#2C2F36] transition-colors"
+                      >
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-2">
+                            <TokenPairIcon token0={pool.token0.symbol} token1={pool.token1.symbol} size="sm" />
+                            <span className="font-semibold text-white">{pool.token0.symbol}/{pool.token1.symbol}</span>
+                            <FeeBadge />
+                          </div>
+                          <span className="text-green-400 font-medium">{apr.toFixed(2)}% APR</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-sm">
+                          <div><span className="text-gray-400">TVL:</span> <span className="text-white">{formatUSD(tvl)}</span></div>
+                          <div><span className="text-gray-400">Volume:</span> <span className="text-white">{formatUSD(volume)}</span></div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="p-4">
+            {!isConnected ? (
+              <div className="text-center py-12">
+                <Wallet className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+                <p className="text-gray-400 mb-2">Connect your wallet to view positions</p>
+              </div>
+            ) : loading ? (
+              <div className="flex items-center justify-center py-12">
+                <RefreshCw className="w-8 h-8 text-gray-500 animate-spin" />
+              </div>
+            ) : positions.length === 0 ? (
+              <div className="text-center py-12">
+                <Layers className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+                <p className="text-gray-400 mb-4">You don't have any liquidity positions</p>
+                <button
+                  onClick={() => { setSelectedPool(undefined); setShowAddModal(true) }}
+                  className="inline-flex items-center gap-2 px-6 py-3 bg-[#2172E5] hover:bg-[#1a5fc7] text-white font-semibold rounded-xl transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add Liquidity
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {positions.map((pos, i) => (
+                  <PositionCard key={i} position={pos} onRefresh={fetchData} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Add Liquidity Modal */}
+      <AnimatePresence>
+        {showAddModal && (
+          <AddLiquidityModal
+            onClose={() => { setShowAddModal(false); setSelectedPool(undefined) }}
+            onSuccess={fetchData}
+            preselectedPool={selectedPool}
+          />
+        )}
+      </AnimatePresence>
     </div>
   )
 }
