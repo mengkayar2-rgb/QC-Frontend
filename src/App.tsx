@@ -6,7 +6,7 @@ import '@rainbow-me/rainbowkit/styles.css'
 import { monadMainnet } from './config/chains'
 import { SwapCard } from './components/SwapCard'
 import { LiquidityCard } from './components/LiquidityCard'
-import { FarmCard } from './components/FarmCard'
+import { FarmPage } from './components/farm'
 import { Stats } from './components/Stats'
 import { RotatingBanner } from './components/RotatingBanner'
 
@@ -131,10 +131,11 @@ function App() {
               <div className="flex justify-center">
                 {activeTab === 'liquidity' ? (
                   <LiquidityCard />
+                ) : activeTab === 'farm' ? (
+                  <FarmPage />
                 ) : (
                   <div className="w-full max-w-md">
                     {activeTab === 'swap' && <SwapCard />}
-                    {activeTab === 'farm' && <FarmCard />}
                   </div>
                 )}
               </div>

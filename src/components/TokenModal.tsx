@@ -1,14 +1,15 @@
-import { useState } from 'react'
-import { X, Search, Copy, Check, ExternalLink } from 'lucide-react'
-import { useAccount, useBalance, useReadContract } from 'wagmi'
-import { formatUnits } from 'viem'
-import { DEFAULT_TOKENS, getStoredTokens, NATIVE_ADDRESS, type Token } from '../config/tokens'
+import { useState, useEffect } from 'react'
+import { X, Search, Copy, Check, ExternalLink, AlertCircle } from 'lucide-react'
+import { useAccount, useBalance, useReadContract, usePublicClient } from 'wagmi'
+import { formatUnits, isAddress } from 'viem'
+import { DEFAULT_TOKENS, getStoredTokens, saveToken, NATIVE_ADDRESS, type Token } from '../config/tokens'
 import { ERC20_ABI } from '../config/abis'
 
 interface TokenModalProps {
   onSelect: (token: Token) => void
   onClose: () => void
   onImport: () => void
+  excludeToken?: Token // Optional token to exclude from list
 }
 
 function TokenItem({ token, onSelect }: { token: Token; onSelect: (token: Token) => void }) {
@@ -121,16 +122,114 @@ function TokenItem({ token, onSelect }: { token: Token; onSelect: (token: Token)
   )
 }
 
-export function TokenModal({ onSelect, onClose, onImport }: TokenModalProps) {
+export function TokenModal({ onSelect, onClose, onImport, excludeToken }: TokenModalProps) {
   const [searchQuery, setSearchQuery] = useState('')
-  const customTokens = getStoredTokens()
+  const [customTokens, setCustomTokens] = useState<Token[]>([])
+  const [isSearchingAddress, setIsSearchingAddress] = useState(false)
+  const [addressToken, setAddressToken] = useState<Token | null>(null)
+  const [searchError, setSearchError] = useState('')
+  const publicClient = usePublicClient()
+  
+  // Load custom tokens on mount
+  useEffect(() => {
+    setCustomTokens(getStoredTokens())
+  }, [])
+  
   const allTokens = [...DEFAULT_TOKENS, ...customTokens]
   
-  const filteredTokens = allTokens.filter(token => 
-    token.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    token.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    token.address.toLowerCase().includes(searchQuery.toLowerCase())
-  )
+  // Filter tokens based on search and exclude
+  const filteredTokens = allTokens.filter(token => {
+    // Exclude the specified token
+    if (excludeToken && token.address.toLowerCase() === excludeToken.address.toLowerCase()) {
+      return false
+    }
+    // Filter by search query
+    if (!searchQuery) return true
+    const query = searchQuery.toLowerCase()
+    return (
+      token.symbol.toLowerCase().includes(query) ||
+      token.name.toLowerCase().includes(query) ||
+      token.address.toLowerCase().includes(query)
+    )
+  })
+  
+  // Check if search query is a valid address and try to fetch token info
+  useEffect(() => {
+    const fetchTokenByAddress = async () => {
+      if (!searchQuery || !isAddress(searchQuery) || !publicClient) {
+        setAddressToken(null)
+        setSearchError('')
+        return
+      }
+      
+      // Check if token already exists
+      const existingToken = allTokens.find(t => t.address.toLowerCase() === searchQuery.toLowerCase())
+      if (existingToken) {
+        setAddressToken(null)
+        return
+      }
+      
+      setIsSearchingAddress(true)
+      setSearchError('')
+      
+      try {
+        // First get symbol and decimals
+        const [symbolResult, decimalsResult] = await Promise.all([
+          publicClient.readContract({
+            address: searchQuery as `0x${string}`,
+            abi: ERC20_ABI,
+            functionName: 'symbol',
+          }),
+          publicClient.readContract({
+            address: searchQuery as `0x${string}`,
+            abi: ERC20_ABI,
+            functionName: 'decimals',
+          }),
+        ])
+        
+        const symbol = symbolResult as string
+        const decimals = Number(decimalsResult)
+        
+        // Try to get name, fallback to symbol
+        let name: string = symbol
+        try {
+          const nameResult = await publicClient.readContract({
+            address: searchQuery as `0x${string}`,
+            abi: [{ inputs: [], name: 'name', outputs: [{ type: 'string' }], stateMutability: 'view', type: 'function' }] as const,
+            functionName: 'name',
+          })
+          name = nameResult as string
+        } catch {
+          // Use symbol as name if name() doesn't exist
+        }
+        
+        setAddressToken({
+          address: searchQuery as `0x${string}`,
+          symbol: symbol,
+          name: name,
+          decimals: decimals,
+          isNative: false
+        })
+      } catch (err) {
+        setSearchError('Invalid token address or not an ERC20 token')
+        setAddressToken(null)
+      } finally {
+        setIsSearchingAddress(false)
+      }
+    }
+    
+    const debounce = setTimeout(fetchTokenByAddress, 500)
+    return () => clearTimeout(debounce)
+  }, [searchQuery, publicClient, allTokens])
+  
+  // Handle importing a token found by address
+  const handleImportAddressToken = () => {
+    if (addressToken) {
+      saveToken(addressToken)
+      setCustomTokens(prev => [...prev, addressToken])
+      onSelect(addressToken)
+    }
+  }
 
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -180,19 +279,61 @@ export function TokenModal({ onSelect, onClose, onImport }: TokenModalProps) {
 
         {/* My Tokens Label */}
         <div className="px-5 py-2">
-          <span className="text-xs text-gray-500 uppercase tracking-wider font-medium">All Tokens</span>
+          <span className="text-xs text-gray-500 uppercase tracking-wider font-medium">
+            {searchQuery ? 'Search Results' : 'All Tokens'}
+          </span>
         </div>
 
         {/* Token List */}
         <div className="flex-1 overflow-y-auto px-2 pb-2">
+          {/* Show loading state when searching by address */}
+          {isSearchingAddress && (
+            <div className="flex items-center justify-center py-4">
+              <div className="w-5 h-5 border-2 border-primary-500/30 border-t-primary-500 rounded-full animate-spin" />
+              <span className="ml-2 text-gray-400 text-sm">Searching...</span>
+            </div>
+          )}
+          
+          {/* Show error if address search failed */}
+          {searchError && (
+            <div className="mx-3 mb-3 p-3 bg-red-500/10 border border-red-500/30 rounded-xl flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <span className="text-red-400 text-sm">{searchError}</span>
+            </div>
+          )}
+          
+          {/* Show token found by address */}
+          {addressToken && (
+            <div className="mx-3 mb-3 p-3 bg-primary-500/10 border border-primary-500/30 rounded-xl">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 bg-gradient-to-br from-primary-500/30 to-secondary-500/30 rounded-full flex items-center justify-center">
+                    <span className="text-xs font-bold">{addressToken.symbol.slice(0, 2)}</span>
+                  </div>
+                  <div>
+                    <div className="font-semibold text-white">{addressToken.symbol}</div>
+                    <div className="text-xs text-gray-500">{addressToken.name}</div>
+                  </div>
+                </div>
+                <span className="text-xs px-2 py-1 bg-amber-500/20 text-amber-400 rounded">New</span>
+              </div>
+              <button
+                onClick={handleImportAddressToken}
+                className="w-full py-2 bg-gradient-to-r from-primary-500 to-secondary-500 hover:from-primary-400 hover:to-secondary-400 rounded-lg text-white font-medium text-sm transition-all"
+              >
+                Import & Select
+              </button>
+            </div>
+          )}
+          
           {filteredTokens.length > 0 ? (
             filteredTokens.map(token => (
               <TokenItem key={token.address} token={token} onSelect={onSelect} />
             ))
-          ) : (
+          ) : !addressToken && !isSearchingAddress && (
             <div className="text-center py-8 text-gray-500">
               <p>No tokens found</p>
-              <p className="text-xs mt-1">Try importing a custom token</p>
+              <p className="text-xs mt-1">Try pasting a token address</p>
             </div>
           )}
         </div>

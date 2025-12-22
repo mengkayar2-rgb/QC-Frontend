@@ -26,6 +26,41 @@ export const ROUTER_ABI = [
   },
   {
     inputs: [
+      { name: 'token', type: 'address' },
+      { name: 'liquidity', type: 'uint256' },
+      { name: 'amountTokenMin', type: 'uint256' },
+      { name: 'amountETHMin', type: 'uint256' },
+      { name: 'to', type: 'address' },
+      { name: 'deadline', type: 'uint256' }
+    ],
+    name: 'removeLiquidityETH',
+    outputs: [
+      { name: 'amountToken', type: 'uint256' },
+      { name: 'amountETH', type: 'uint256' }
+    ],
+    stateMutability: 'nonpayable',
+    type: 'function'
+  },
+  {
+    inputs: [
+      { name: 'token', type: 'address' },
+      { name: 'amountTokenDesired', type: 'uint256' },
+      { name: 'amountTokenMin', type: 'uint256' },
+      { name: 'amountETHMin', type: 'uint256' },
+      { name: 'to', type: 'address' },
+      { name: 'deadline', type: 'uint256' }
+    ],
+    name: 'addLiquidityETH',
+    outputs: [
+      { name: 'amountToken', type: 'uint256' },
+      { name: 'amountETH', type: 'uint256' },
+      { name: 'liquidity', type: 'uint256' }
+    ],
+    stateMutability: 'payable',
+    type: 'function'
+  },
+  {
+    inputs: [
       { name: 'amountIn', type: 'uint256' },
       { name: 'amountOutMin', type: 'uint256' },
       { name: 'path', type: 'address[]' },
@@ -193,6 +228,28 @@ export const MASTERCHEF_ABI = [
     inputs: [],
     name: 'poolLength',
     outputs: [{ name: '', type: 'uint256' }],
+    stateMutability: 'view',
+    type: 'function'
+  },
+  {
+    inputs: [{ name: '_pid', type: 'uint256' }],
+    name: 'poolInfo',
+    outputs: [
+      { name: 'lpToken', type: 'address' },
+      { name: 'allocPoint', type: 'uint256' },
+      { name: 'lastRewardBlock', type: 'uint256' },
+      { name: 'accQuickPerShare', type: 'uint256' }
+    ],
+    stateMutability: 'view',
+    type: 'function'
+  },
+  {
+    inputs: [{ name: '_pid', type: 'uint256' }, { name: '_user', type: 'address' }],
+    name: 'userInfo',
+    outputs: [
+      { name: 'amount', type: 'uint256' },
+      { name: 'rewardDebt', type: 'uint256' }
+    ],
     stateMutability: 'view',
     type: 'function'
   },
